@@ -17,7 +17,7 @@ template <typename T> struct Color
     void operator/=(const T divisor);
 };
 
-template <typename T, std::size_t n = 16> struct Histgram
+template <typename T, std::size_t n = 20> struct Histgram
 {
     using value_type = T;
     static constexpr std::size_t BinSizePerColor = n;

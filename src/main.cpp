@@ -1,6 +1,7 @@
 #include "common.hpp"
 #include "image.hpp"
 
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -38,7 +39,9 @@ struct Config
         std::cin >> height >> width >> number_of_sample;
         patch_size = 1;
         search_range = 5;
-        kappa = 2.0;
+        kappa = 0.5;
+        m = 7.5;
+        s = 2;
     }
 };
 
@@ -180,7 +183,7 @@ void calculate_pixel_distance(
 }
 
 value_t calculate_distance_patch(const value_t* pixel_distance_table, index_t y1, index_t x1, index_t y2, index_t x2,
-    const index_t patch_size, const index_t max_range, const index_t stride)
+    const index_t patch_size, const index_t max_range, const index_t stride, const index_t height)
 {
     const auto max_range_all = 2 * max_range + 1;
     const auto dy = y2 - y1;
@@ -193,8 +196,9 @@ value_t calculate_distance_patch(const value_t* pixel_distance_table, index_t y1
         for (index_t p_dx = -patch_size; p_dx <= patch_size; p_dx++)
         {
             const auto p_index = (y1 + p_dy) * stride + x1 + p_dx;
+
             // TODO: d_index がループ内固定なので、gather すると持ってこれる
-            distance_sum += pixel_distance_table[p_index * stride + d_index];
+            distance_sum += pixel_distance_table[p_index * max_range_all * max_range_all + d_index];
         }
     }
     return distance_sum;
@@ -223,10 +227,12 @@ void add_patch(Color<value_t>* sub_buffer, index_t src_y, index_t src_x, index_t
 void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgram,
     Image<Color<value_t>>& output, Config& config)
 {
+    auto start1 = std::chrono::system_clock::now();
+
     // initialize output buffer
-    for (index_t y = 0; y < config.height; y++)
+    for (index_t y = 0; y < output.height(); y++)
     {
-        for (index_t x = 0; x < config.width; x++)
+        for (index_t x = 0; x < output.width(); x++)
         {
             auto& p = output.pixel(y, x);
             p.r = p.g = p.b = 0;
@@ -245,8 +251,6 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::unique_ptr<value_t[]> pixel_distance_table(
         new value_t[input.height() * input.width() * max_range_all * max_range_all]);
 
-    calculate_pixel_distance(pixel_distance_table.get(), color_histgram, config, max_range);
-
     // filter_count[y][x] = 中心が (y ,x) の patchを重ねる回数
     std::unique_ptr<value_t[]> patch_count(new value_t[input.height() * input.width()]);
     for (index_t i = 0; i < input.height() * input.width(); i++)
@@ -259,12 +263,22 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::unique_ptr<Color<value_t>[]> sub_buffer(
         new Color<value_t>[input.height() * input.width() * patch_range_all * patch_range_all]);
 
+    auto end0 = std::chrono::system_clock::now();
+    std::cerr << "elapsed time of initialization: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end0 - start1).count() << "[ms]" << std::endl;
+
+    calculate_pixel_distance(pixel_distance_table.get(), color_histgram, config, max_range);
+
+    auto end1 = std::chrono::system_clock::now();
+    std::cerr << "elapsed time of pixel distance: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end1 - end0).count() << "[ms]" << std::endl;
+
     // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
     for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
         for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
-            const auto index = y * color_histgram.width() + x;
+            const auto index = y * input.width() + x;
 
             const auto s_sy = std::max<>(half_padding, y - config.search_range);
             const auto s_ey = std::min<>(y + config.search_range, config.height - 1 + half_padding);
@@ -277,7 +291,7 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
                 for (index_t s_x = s_sx; s_x <= s_ex; s_x++)
                 {
                     const auto distance = calculate_distance_patch(pixel_distance_table.get(), y, x, s_y, s_x,
-                        config.patch_size, max_range, color_histgram.width());
+                        config.patch_size, max_range, color_histgram.width(), color_histgram.height());
                     if (distance < config.kappa)
                     {
                         patch_count[index]++;
@@ -287,6 +301,10 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
             }
         }
     }
+
+    auto end2 = std::chrono::system_clock::now();
+    std::cerr << "elapsed time of patch distance: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end2 - end1).count() << "[ms]" << std::endl;
 
     // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
     // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
@@ -315,6 +333,10 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
             output.pixel(y, x) /= count;
         }
     }
+
+    auto end3 = std::chrono::system_clock::now();
+    std::cerr << "elapsed time of accumulate buffer: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end3 - end2).count() << "[ms]" << std::endl;
 }
 
 int main()
@@ -338,4 +360,6 @@ int main()
 
     std::cout << "elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
               << "[ms]" << std::endl;
+
+    return 0;
 }
