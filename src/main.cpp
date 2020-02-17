@@ -42,10 +42,26 @@ struct Config
     }
 };
 
-index_t calculate_index(value_t v, value_t m, value_t s)
+index_t calculate_histgram_index(value_t v, value_t m, value_t s, index_t bin_size)
 {
-    value_t normalized_v = std::pow(v, 1.0 / 2.2);
-    const index_t
+    // threashold
+    // [m * 1.0 / (bin_size - 1), m * 2.0 / (bin_size - 1), ..., m * (bin_size - 2) / (bin_size - 1), s * m]
+    // x (bin_size - 1) -> [m, 2m, 3m, ..., (bin_size - 2)m, (bin_size - 1) * sm]
+    // / m -> [1, 2, 3, ..., bin_size - 2, (bin_size - 1) * s]
+    value_t normalized_v = std::pow(v, 1.0 / 2.2) * (bin_size - 1) / m;
+
+    if (normalized_v < (bin_size - 2))
+    {
+        return static_cast<index_t>(normalized_v);
+    }
+    else if (normalized_v < (bin_size - 1) * s)
+    {
+        return bin_size - 2;
+    }
+    else
+    {
+        return bin_size - 1;
+    }
 }
 
 void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgram, const Config& config)
@@ -55,9 +71,9 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
 
     auto clamp = [](value_t lower, value_t v, value_t upper) { return std::min<>(std::max<>(lower, v), upper); };
 
-    for (index_t y = 0; y < input.height; y++)
+    for (index_t y = 0; y < input.height(); y++)
     {
-        for (index_t x = 0; x < input.width; x++)
+        for (index_t x = 0; x < input.width(); x++)
         {
             auto& hist = color_histgram.pixel(y, x);
             auto& pixel = input.pixel(y, x);
@@ -76,7 +92,8 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
                 c.b = clamp(0.0f, c.b, config.m * config.s);
 
                 {
-                    const auto index_r = calculate_index(c.r, config.m, config.s);
+                    const auto index_r
+                        = calculate_histgram_index(c.r, config.m, config.s, Histgram<value_t>::BinSizePerColor);
                     hist.bins[index_r]++;
                     if (index_r != 0)
                     {
@@ -84,7 +101,8 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
                     }
                 }
                 {
-                    const auto index_g = calculate_index(c.g, config.m, config.s);
+                    const auto index_g
+                        = calculate_histgram_index(c.g, config.m, config.s, Histgram<value_t>::BinSizePerColor);
                     hist.bins[index_g + Histgram<value_t>::BinSizePerColor]++;
                     if (index_g != 0)
                     {
@@ -92,8 +110,9 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
                     }
                 }
                 {
-                    const auto index_b = calculate_index(c.b, config.m, config.s);
-                    hist.bins[index_b + Histgram<value_t>::BinSizePerColor]++;
+                    const auto index_b
+                        = calculate_histgram_index(c.b, config.m, config.s, Histgram<value_t>::BinSizePerColor);
+                    hist.bins[index_b + 2 * Histgram<value_t>::BinSizePerColor]++;
                     if (index_b != 0)
                     {
                         hist.nonzero_sample++;
@@ -165,7 +184,7 @@ int main()
     Image<Histgram<value_t>> color_histgram(config.height, config.width);
     Image<Color<value_t>> output(config.height, config.width);
 
-    setup(input, color_histgram);
+    setup(input, color_histgram, config);
 
     const auto start = std::chrono::system_clock::now();
 
