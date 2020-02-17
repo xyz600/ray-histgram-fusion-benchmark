@@ -161,6 +161,7 @@ void calculate_pixel_distance(
     const auto max_range_all = 2 * max_range + 1;
     const auto half_padding = config.patch_size;
 
+#pragma omp parallel for
     // ピクセル間の xi-squared-distance を計算
     for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
@@ -273,6 +274,7 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::cerr << "elapsed time of pixel distance: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(end1 - end0).count() << "[ms]" << std::endl;
 
+#pragma omp parallel for
     // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
     for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
@@ -306,8 +308,9 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::cerr << "elapsed time of patch distance: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(end2 - end1).count() << "[ms]" << std::endl;
 
-    // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
-    // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
+// sub_buffer, patch_count から、最終的なバッファに足しこんでいく
+// patch 間距離を計算して、一定値以下なら output_buffer に足し込む
+#pragma omp parallel for
     for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
         for (index_t x = half_padding; x < config.width + half_padding; x++)
