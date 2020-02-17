@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 
 struct Config
@@ -76,7 +77,7 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
 
     const auto half_padding = config.patch_size;
 
-    for (index_t y = half_padding; y < config.height + half_padding; y++)
+    for (index_t y = config.height + half_padding - 1; y >= half_padding; y--)
     {
         for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
@@ -122,6 +123,7 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
                     }
                 }
             }
+            pixel /= config.number_of_sample;
         }
     }
 
@@ -342,6 +344,36 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
               << std::chrono::duration_cast<std::chrono::milliseconds>(end3 - end2).count() << "[ms]" << std::endl;
 }
 
+void print_ppm(Image<Color<value_t>>& image, const index_t height, const index_t width, const index_t patch_size,
+    const std::string& result_path)
+{
+    std::ofstream fout;
+    fout.open(result_path);
+
+    if (fout.fail())
+    {
+        return;
+    }
+
+    fout << "P3" << std::endl;
+    fout << width << " " << height << std::endl;
+    fout << 255 << std::endl;
+
+    for (index_t y = patch_size; y < height + patch_size; y++)
+    {
+        for (index_t x = patch_size; x < width + patch_size; x++)
+        {
+            auto& p = image.pixel(y, x);
+            fout << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.r, 1.0 / 2.2), 255)))
+                 << " "
+                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.g, 1.0 / 2.2), 255)))
+                 << " "
+                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.b, 1.0 / 2.2), 255)))
+                 << std::endl;
+        }
+    }
+}
+
 int main()
 {
     Config config;
@@ -355,6 +387,9 @@ int main()
 
     setup(input, color_histgram, config);
 
+    const std::string input_path("input.ppm");
+    print_ppm(input, config.height, config.width, config.patch_size, input_path);
+
     const auto start = std::chrono::system_clock::now();
 
     ray_histgram_fusion(input, color_histgram, output, config);
@@ -363,6 +398,9 @@ int main()
 
     std::cout << "elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
               << "[ms]" << std::endl;
+
+    const std::string result_path("result.ppm");
+    print_ppm(output, config.height, config.width, config.patch_size, result_path);
 
     return 0;
 }
