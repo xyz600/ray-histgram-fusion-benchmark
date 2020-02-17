@@ -10,6 +10,11 @@ template <typename T> struct Color
     T r;
     T g;
     T b;
+
+    Color();
+
+    void operator+=(const Color& src);
+    void operator/=(const T divisor);
 };
 
 template <typename T, std::size_t n = 16> struct Histgram

@@ -71,9 +71,11 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
 
     auto clamp = [](value_t lower, value_t v, value_t upper) { return std::min<>(std::max<>(lower, v), upper); };
 
-    for (index_t y = 0; y < input.height(); y++)
+    const auto half_padding = config.patch_size;
+
+    for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
-        for (index_t x = 0; x < input.width(); x++)
+        for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
             auto& hist = color_histgram.pixel(y, x);
             auto& pixel = input.pixel(y, x);
@@ -83,9 +85,7 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
                 Color<value_t> c;
                 std::cin >> c.r >> c.g >> c.b;
 
-                pixel.r += c.r;
-                pixel.g += c.g;
-                pixel.b += c.b;
+                pixel += c;
 
                 c.r = clamp(0.0f, c.r, config.m * config.s);
                 c.g = clamp(0.0f, c.g, config.m * config.s);
@@ -121,6 +121,19 @@ void setup(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgra
             }
         }
     }
+
+    // padding 部分を埋める
+    for (index_t y = 0; y < input.height(); y++)
+    {
+        for (index_t x = 0; x < input.width(); x++)
+        {
+            const auto cy = clamp(half_padding, y, config.height + half_padding);
+            const auto cx = clamp(half_padding, x, config.width + half_padding);
+
+            input.pixel(y, x) = input.pixel(cy, cx);
+            color_histgram.pixel(y, x) = color_histgram.pixel(cy, cx);
+        }
+    }
 }
 
 value_t xi_squared_distance(Histgram<value_t>& h1, Histgram<value_t>& h2)
@@ -139,6 +152,74 @@ value_t xi_squared_distance(Histgram<value_t>& h1, Histgram<value_t>& h2)
     return sum_all / kxy;
 }
 
+void calculate_pixel_distance(
+    value_t* pixel_distance_table, Image<Histgram<value_t>>& color_histgram, Config& config, const index_t max_range)
+{
+    const auto max_range_all = 2 * max_range + 1;
+    const auto half_padding = config.patch_size;
+
+    // ピクセル間の xi-squared-distance を計算
+    for (index_t y = half_padding; y < config.height + half_padding; y++)
+    {
+        for (index_t x = half_padding; x < config.width + half_padding; x++)
+        {
+            const auto index = y * color_histgram.width() + x;
+
+            for (index_t dy = 0; dy < max_range_all; dy++)
+            {
+                for (index_t dx = 0; dx < max_range_all; dx++)
+                {
+                    const auto d_index = dy * max_range_all + dx;
+
+                    pixel_distance_table[index * max_range_all + d_index] = xi_squared_distance(
+                        color_histgram.pixel(y, x), color_histgram.pixel(y + dy - max_range, x + dx - max_range));
+                }
+            }
+        }
+    }
+}
+
+value_t calculate_distance_patch(const value_t* pixel_distance_table, index_t y1, index_t x1, index_t y2, index_t x2,
+    const index_t patch_size, const index_t max_range, const index_t stride)
+{
+    const auto max_range_all = 2 * max_range + 1;
+    const auto dy = y2 - y1;
+    const auto dx = x2 - x1;
+    const auto d_index = (dy + max_range) * max_range_all + (dx + max_range);
+
+    value_t distance_sum = 0.0;
+    for (index_t p_dy = -patch_size; p_dy <= patch_size; p_dy++)
+    {
+        for (index_t p_dx = -patch_size; p_dx <= patch_size; p_dx++)
+        {
+            const auto p_index = (y1 + p_dy) * stride + x1 + p_dx;
+            // TODO: d_index がループ内固定なので、gather すると持ってこれる
+            distance_sum += pixel_distance_table[p_index * stride + d_index];
+        }
+    }
+    return distance_sum;
+}
+
+void add_patch(Color<value_t>* sub_buffer, index_t src_y, index_t src_x, index_t dst_y, index_t dst_x,
+    Image<Color<value_t>>& input, const index_t patch_size)
+{
+    const index_t patch_range_all = patch_size * 2 + 1;
+
+    for (index_t p_dy = -patch_size; p_dy <= patch_size; p_dy++)
+    {
+        for (index_t p_dx = -patch_size; p_dx <= patch_size; p_dx++)
+        {
+            const auto p_index = (p_dy + patch_size) * patch_range_all + (p_dx + patch_size);
+
+            const auto dst_index = (dst_y + p_dy) * input.width() + (dst_x + p_dx);
+
+            auto& dst = sub_buffer[dst_index * (patch_range_all * patch_range_all) + p_index];
+            auto& src = input.pixel(src_y + p_dy, src_x + p_dx);
+            dst += src;
+        }
+    }
+}
+
 void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgram,
     Image<Color<value_t>>& output, Config& config)
 {
@@ -147,99 +228,60 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     {
         for (index_t x = 0; x < config.width; x++)
         {
-            output.pixel(y, x).r = input.pixel(y, x).r;
-            output.pixel(y, x).g = input.pixel(y, x).g;
-            output.pixel(y, x).b = input.pixel(y, x).b;
+            auto& p = output.pixel(y, x);
+            p.r = p.g = p.b = 0;
         }
     }
 
     const auto max_range = std::max<>(config.patch_size, config.search_range);
     const auto max_range_all = 2 * max_range + 1;
 
+    const auto search_range_all = 2 * config.search_range + 1;
+    const auto patch_range_all = 2 * config.patch_size + 1;
+    const auto half_padding = config.patch_size;
+
     // pixel 間の xi-squared distance.
     // シンプルさと並列度を重視して、重複あり、自身との距離計算ありで実施
     std::unique_ptr<value_t[]> pixel_distance_table(
-        new value_t[config.height * config.width * max_range_all * max_range_all]);
+        new value_t[input.height() * input.width() * max_range_all * max_range_all]);
 
-    // ピクセル間の xi-squared-distance を計算
-    for (index_t y = 0; y < config.height; y++)
-    {
-        for (index_t x = 0; x < config.width; x++)
-        {
-            const auto index = y * config.width + x;
-
-            for (index_t dy = -max_range; dy <= max_range; dy++)
-            {
-                for (index_t dx = -max_range; dx <= max_range; dx++)
-                {
-                    const auto d_index = (dy + max_range) * max_range_all + dx + max_range;
-                    // pixel_distance_table[toIndex(y, x)][toIndex(dy, dx)] = distance(y, x, y + dy, x + dx);
-                }
-            }
-        }
-    }
+    calculate_pixel_distance(pixel_distance_table.get(), color_histgram, config, max_range);
 
     // filter_count[y][x] = 中心が (y ,x) の patchを重ねる回数
-    std::unique_ptr<value_t[]> patch_count(new value_t[config.height * config.width]);
-
-    const auto search_range_all = 2 * config.search_range + 1;
-    const auto patch_range_all = 2 * config.patch_size + 1;
+    std::unique_ptr<value_t[]> patch_count(new value_t[input.height() * input.width()]);
+    for (index_t i = 0; i < input.height() * input.width(); i++)
+    {
+        patch_count[i] = 0;
+    }
 
     // sub_buffer[(y, x, p_dy, p_dx)] = y, x の diff を計算
     // ピクセル間で独立に操作したいので、中心座標毎にバッファを別に持つ
     std::unique_ptr<Color<value_t>[]> sub_buffer(
-        new Color<value_t>[config.height * config.width * patch_range_all * patch_range_all]);
+        new Color<value_t>[input.height() * input.width() * patch_range_all * patch_range_all]);
 
     // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
-    for (index_t y = 0; y < config.height; y++)
+    for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
-        for (index_t x = 0; x < config.width; x++)
+        for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
-            const auto index = y * config.width + x;
+            const auto index = y * color_histgram.width() + x;
 
-            for (index_t s_dy = -config.search_range; s_dy <= config.search_range; s_dy++)
+            const auto s_sy = std::max<>(half_padding, y - config.search_range);
+            const auto s_ey = std::min<>(y + config.search_range, config.height - 1 + half_padding);
+            const auto s_sx = std::max<>(half_padding, x - config.search_range);
+            const auto s_ex = std::min<>(x + config.search_range, config.width - 1 + half_padding);
+
+            // search range
+            for (index_t s_y = s_sy; s_y <= s_ey; s_y++)
             {
-                for (index_t s_dx = -config.search_range; s_dx <= config.search_range; s_dx++)
+                for (index_t s_x = s_sx; s_x <= s_ex; s_x++)
                 {
-                    // distance = distance(P(y, x), P(y + s_dy, x + s_dx))
-                    // if (distance < kappa) {
-                    // sub_buffer[toIndex(y, x)] += Patch(y + s_dy, x + s_dx)
-                    // }
-
-                    const auto c_y = y + s_dy;
-                    const auto c_x = x + s_dx;
-                    const auto c_index = y * config.width + x;
-
-                    const auto s_index = (s_dy + config.search_range) * search_range_all + (s_dx + config.search_range);
-
-                    value_t distance_sum = 0.0;
-                    for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
-                    {
-                        for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
-                        {
-                            distance_sum += pixel_distance_table[c_index * max_range_all + s_index];
-                        }
-                    }
-                    if (distance_sum <= config.kappa)
+                    const auto distance = calculate_distance_patch(pixel_distance_table.get(), y, x, s_y, s_x,
+                        config.patch_size, max_range, color_histgram.width());
+                    if (distance < config.kappa)
                     {
                         patch_count[index]++;
-                        // Patch(y, x) += Patch(y + s_dy, x + s_dx);
-                        for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
-                        {
-                            for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
-                            {
-                                const auto p_index
-                                    = (p_dy + config.patch_size) * patch_range_all + (p_dx + config.patch_size);
-
-                                const auto dst_index = (y + s_dy + p_dy) * config.width + (x + s_dx + p_dx);
-
-                                auto& dst = sub_buffer[dst_index * (patch_range_all * patch_range_all) + p_index];
-                                auto& src = input.pixel(y + s_dy + p_dy, x + s_dx + p_dx);
-                                dst.r += src.r;
-                                dst.g += src.g;
-                                dst.b += src.b;
-                            }
-                        }
+                        add_patch(sub_buffer.get(), y, x, s_y, s_x, input, config.patch_size);
                     }
                 }
             }
@@ -248,19 +290,29 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
 
     // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
     // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
-    for (index_t y = 0; y < config.height; y++)
+    for (index_t y = half_padding; y < config.height + half_padding; y++)
     {
-        for (index_t x = 0; x < config.width; x++)
+        for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
+            const index_t index = y * input.width() + x;
+
+            index_t count = 0;
+
             for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
             {
                 for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
                 {
-                    // output(y, x) += sub_buffer(y, x, p_dy, p_dx);
-                    // count(y, x) += patch_count(y, x, p_dy, p_dx);
+                    const auto ny = y + p_dy;
+                    const auto nx = x + p_dx;
+                    const auto n_index = ny * input.width() + nx;
+                    // 周辺 pixel の (y, x) 相当の場所を見て確認する
+                    const auto p_index = (-p_dy + config.patch_size) * patch_range_all - p_dx + config.patch_size;
+
+                    output.pixel(y, x) += sub_buffer[n_index * patch_range_all + p_index];
+                    count += patch_count[n_index];
                 }
             }
-            // output(y, x) /= count(y, x)
+            output.pixel(y, x) /= count;
         }
     }
 }
@@ -270,9 +322,11 @@ int main()
     Config config;
     config.setup();
 
-    Image<Color<value_t>> input(config.height, config.width);
-    Image<Histgram<value_t>> color_histgram(config.height, config.width);
-    Image<Color<value_t>> output(config.height, config.width);
+    const auto padding = config.patch_size * 2;
+
+    Image<Color<value_t>> input(config.height + padding, config.width + padding);
+    Image<Histgram<value_t>> color_histgram(config.height + padding, config.width + padding);
+    Image<Color<value_t>> output(config.height + padding, config.width + padding);
 
     setup(input, color_histgram, config);
 

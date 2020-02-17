@@ -4,6 +4,22 @@
 #include <algorithm>
 #include <memory>
 
+template <typename T> void Color<T>::operator+=(const Color<T>& src)
+{
+    r += src.r;
+    g += src.g;
+    b += src.b;
+}
+
+template <typename T> void Color<T>::operator/=(const T divisor)
+{
+    r /= divisor;
+    g /= divisor;
+    b /= divisor;
+}
+
+template <typename T> Color<T>::Color() { r = g = b = 0; }
+
 template <typename T, std::size_t n> Histgram<T, n>::Histgram() { std::fill(bins.begin(), bins.end(), 0); }
 
 template <typename T>
@@ -27,6 +43,8 @@ template <typename T> std::size_t Image<T>::height() const { return height_; }
 template <typename T> std::size_t Image<T>::width() const { return width_; };
 
 // explicit template
+
+template class Color<value_t>;
 
 template class Histgram<value_t>;
 
