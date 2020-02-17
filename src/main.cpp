@@ -40,11 +40,41 @@ struct Config
         std::cin >> height >> width >> number_of_sample;
         patch_size = 1;
         search_range = 5;
-        kappa = 0.5;
+        kappa = 3.5;
         m = 7.5;
         s = 2;
     }
 };
+
+void print_ppm(Image<Color<value_t>>& image, const index_t height, const index_t width, const index_t patch_size,
+    const std::string& result_path)
+{
+    std::ofstream fout;
+    fout.open(result_path);
+
+    if (fout.fail())
+    {
+        return;
+    }
+
+    fout << "P3" << std::endl;
+    fout << width << " " << height << std::endl;
+    fout << 255 << std::endl;
+
+    for (index_t y = patch_size; y < height + patch_size; y++)
+    {
+        for (index_t x = patch_size; x < width + patch_size; x++)
+        {
+            auto& p = image.pixel(y, x);
+            fout << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.r, 1.0 / 2.2), 255)))
+                 << " "
+                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.g, 1.0 / 2.2), 255)))
+                 << " "
+                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.b, 1.0 / 2.2), 255)))
+                 << std::endl;
+        }
+    }
+}
 
 index_t calculate_histgram_index(value_t v, value_t m, value_t s, index_t bin_size)
 {
@@ -154,7 +184,14 @@ value_t xi_squared_distance(Histgram<value_t>& h1, Histgram<value_t>& h2)
             sum_all += (diff * diff) / sum;
         }
     }
-    return sum_all / kxy;
+    if (kxy == 0)
+    {
+        return 0;
+    }
+    else
+    {
+        return sum_all / kxy;
+    }
 }
 
 void calculate_pixel_distance(
@@ -177,7 +214,7 @@ void calculate_pixel_distance(
                 {
                     const auto d_index = dy * max_range_all + dx;
 
-                    pixel_distance_table[index * max_range_all + d_index] = xi_squared_distance(
+                    pixel_distance_table[index * max_range_all * max_range_all + d_index] = xi_squared_distance(
                         color_histgram.pixel(y, x), color_histgram.pixel(y + dy - max_range, x + dx - max_range));
                 }
             }
@@ -186,7 +223,7 @@ void calculate_pixel_distance(
 }
 
 value_t calculate_distance_patch(const value_t* pixel_distance_table, index_t y1, index_t x1, index_t y2, index_t x2,
-    const index_t patch_size, const index_t max_range, const index_t stride, const index_t height)
+    const index_t patch_size, const index_t max_range, const index_t stride)
 {
     const auto max_range_all = 2 * max_range + 1;
     const auto dy = y2 - y1;
@@ -207,7 +244,7 @@ value_t calculate_distance_patch(const value_t* pixel_distance_table, index_t y1
     return distance_sum;
 }
 
-void add_patch(Color<value_t>* sub_buffer, index_t src_y, index_t src_x, index_t dst_y, index_t dst_x,
+void add_patch(Color<value_t>* sub_buffer, index_t dst_y, index_t dst_x, index_t src_y, index_t src_x,
     Image<Color<value_t>>& input, const index_t patch_size)
 {
     const index_t patch_range_all = patch_size * 2 + 1;
@@ -220,7 +257,7 @@ void add_patch(Color<value_t>* sub_buffer, index_t src_y, index_t src_x, index_t
 
             const auto dst_index = (dst_y + p_dy) * input.width() + (dst_x + p_dx);
 
-            auto& dst = sub_buffer[dst_index * (patch_range_all * patch_range_all) + p_index];
+            auto& dst = sub_buffer[dst_index * patch_range_all * patch_range_all + p_index];
             auto& src = input.pixel(src_y + p_dy, src_x + p_dx);
             dst += src;
         }
@@ -289,19 +326,28 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
             const auto s_sx = std::max<>(half_padding, x - config.search_range);
             const auto s_ex = std::min<>(x + config.search_range, config.width - 1 + half_padding);
 
+            auto& pixel = output.pixel(y, x);
+            pixel.r = pixel.g = pixel.b = 0;
+
             // search range
             for (index_t s_y = s_sy; s_y <= s_ey; s_y++)
             {
                 for (index_t s_x = s_sx; s_x <= s_ex; s_x++)
                 {
                     const auto distance = calculate_distance_patch(pixel_distance_table.get(), y, x, s_y, s_x,
-                        config.patch_size, max_range, color_histgram.width(), color_histgram.height());
+                        config.patch_size, max_range, color_histgram.width());
                     if (distance < config.kappa)
                     {
                         patch_count[index]++;
-                        add_patch(sub_buffer.get(), y, x, s_y, s_x, input, config.patch_size);
+                        // add_patch(sub_buffer.get(), y, x, s_y, s_x, input, config.patch_size);
+                        pixel += input.pixel(s_y, s_x);
                     }
                 }
+            }
+
+            if (patch_count[index] > 0)
+            {
+                pixel /= patch_count[index];
             }
         }
     }
@@ -310,6 +356,13 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::cerr << "elapsed time of patch distance: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(end2 - end1).count() << "[ms]" << std::endl;
 
+    {
+        const std::string output_path("output_path.ppm");
+        print_ppm(output, config.height, config.width, config.patch_size, output_path);
+    }
+
+    return;
+
 // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
 // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
 #pragma omp parallel for
@@ -317,61 +370,41 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     {
         for (index_t x = half_padding; x < config.width + half_padding; x++)
         {
-            const index_t index = y * input.width() + x;
-
             index_t count = 0;
 
-            for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
-            {
-                for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
-                {
-                    const auto ny = y + p_dy;
-                    const auto nx = x + p_dx;
-                    const auto n_index = ny * input.width() + nx;
-                    // 周辺 pixel の (y, x) 相当の場所を見て確認する
-                    const auto p_index = (-p_dy + config.patch_size) * patch_range_all - p_dx + config.patch_size;
+            auto& pixel = output.pixel(y, x);
+            pixel.r = pixel.g = pixel.b = 0;
 
-                    output.pixel(y, x) += sub_buffer[n_index * patch_range_all + p_index];
+            const auto s_sy = std::max<>(half_padding, y - config.patch_size);
+            const auto s_ey = std::min<>(y + config.patch_size, config.height - 1 + half_padding);
+            const auto s_sx = std::max<>(half_padding, x - config.patch_size);
+            const auto s_ex = std::min<>(x + config.patch_size, config.width - 1 + half_padding);
+
+            for (index_t ny = s_sy; ny <= s_ey; ny++)
+            {
+                for (index_t nx = s_sx; nx <= s_ex; nx++)
+                {
+                    const auto p_dy = ny - y;
+                    const auto p_dx = nx - x;
+                    const auto n_index = ny * input.width() + nx;
+
+                    // 周辺 pixel の (y, x) 相当の場所を見て確認する
+                    const auto p_index = (-p_dy + config.patch_size) * patch_range_all + -p_dx + config.patch_size;
+
+                    pixel += sub_buffer[n_index * patch_range_all * patch_range_all + p_index];
                     count += patch_count[n_index];
                 }
             }
-            output.pixel(y, x) /= count;
+            if (count > 0)
+            {
+                output.pixel(y, x) /= count;
+            }
         }
     }
 
     auto end3 = std::chrono::system_clock::now();
     std::cerr << "elapsed time of accumulate buffer: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(end3 - end2).count() << "[ms]" << std::endl;
-}
-
-void print_ppm(Image<Color<value_t>>& image, const index_t height, const index_t width, const index_t patch_size,
-    const std::string& result_path)
-{
-    std::ofstream fout;
-    fout.open(result_path);
-
-    if (fout.fail())
-    {
-        return;
-    }
-
-    fout << "P3" << std::endl;
-    fout << width << " " << height << std::endl;
-    fout << 255 << std::endl;
-
-    for (index_t y = patch_size; y < height + patch_size; y++)
-    {
-        for (index_t x = patch_size; x < width + patch_size; x++)
-        {
-            auto& p = image.pixel(y, x);
-            fout << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.r, 1.0 / 2.2), 255)))
-                 << " "
-                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.g, 1.0 / 2.2), 255)))
-                 << " "
-                 << static_cast<index_t>(std::max<value_t>(0, std::min<value_t>(255 * std::pow(p.b, 1.0 / 2.2), 255)))
-                 << std::endl;
-        }
-    }
 }
 
 int main()
@@ -387,8 +420,10 @@ int main()
 
     setup(input, color_histgram, config);
 
-    const std::string input_path("input.ppm");
-    print_ppm(input, config.height, config.width, config.patch_size, input_path);
+    {
+        const std::string input_path("input.ppm");
+        print_ppm(input, config.height, config.width, config.patch_size, input_path);
+    }
 
     const auto start = std::chrono::system_clock::now();
 
@@ -399,8 +434,10 @@ int main()
     std::cout << "elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
               << "[ms]" << std::endl;
 
-    const std::string result_path("result.ppm");
-    print_ppm(output, config.height, config.width, config.patch_size, result_path);
+    {
+        const std::string result_path("result.ppm");
+        print_ppm(output, config.height, config.width, config.patch_size, result_path);
+    }
 
     return 0;
 }
