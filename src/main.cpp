@@ -142,6 +142,17 @@ value_t xi_squared_distance(Histgram<value_t>& h1, Histgram<value_t>& h2)
 void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>& color_histgram,
     Image<Color<value_t>>& output, Config& config)
 {
+    // initialize output buffer
+    for (index_t y = 0; y < config.height; y++)
+    {
+        for (index_t x = 0; x < config.width; x++)
+        {
+            output.pixel(y, x).r = input.pixel(y, x).r;
+            output.pixel(y, x).g = input.pixel(y, x).g;
+            output.pixel(y, x).b = input.pixel(y, x).b;
+        }
+    }
+
     const auto max_range = std::max<>(config.patch_size, config.search_range);
     const auto max_range_all = 2 * max_range + 1;
 
@@ -162,15 +173,94 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
                 for (index_t dx = -max_range; dx <= max_range; dx++)
                 {
                     const auto d_index = (dy + max_range) * max_range_all + dx + max_range;
+                    // pixel_distance_table[toIndex(y, x)][toIndex(dy, dx)] = distance(y, x, y + dy, x + dx);
                 }
             }
         }
     }
 
+    // filter_count[y][x] = 中心が (y ,x) の patchを重ねる回数
+    std::unique_ptr<value_t[]> patch_count(new value_t[config.height * config.width]);
+
+    const auto search_range_all = 2 * config.search_range + 1;
+    const auto patch_range_all = 2 * config.patch_size + 1;
+
+    // sub_buffer[(y, x, p_dy, p_dx)] = y, x の diff を計算
+    // ピクセル間で独立に操作したいので、中心座標毎にバッファを別に持つ
+    std::unique_ptr<Color<value_t>[]> sub_buffer(
+        new Color<value_t>[config.height * config.width * patch_range_all * patch_range_all]);
+
+    // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
     for (index_t y = 0; y < config.height; y++)
     {
         for (index_t x = 0; x < config.width; x++)
         {
+            const auto index = y * config.width + x;
+
+            for (index_t s_dy = -config.search_range; s_dy <= config.search_range; s_dy++)
+            {
+                for (index_t s_dx = -config.search_range; s_dx <= config.search_range; s_dx++)
+                {
+                    // distance = distance(P(y, x), P(y + s_dy, x + s_dx))
+                    // if (distance < kappa) {
+                    // sub_buffer[toIndex(y, x)] += Patch(y + s_dy, x + s_dx)
+                    // }
+
+                    const auto c_y = y + s_dy;
+                    const auto c_x = x + s_dx;
+                    const auto c_index = y * config.width + x;
+
+                    const auto s_index = (s_dy + config.search_range) * search_range_all + (s_dx + config.search_range);
+
+                    value_t distance_sum = 0.0;
+                    for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
+                    {
+                        for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
+                        {
+                            distance_sum += pixel_distance_table[c_index * max_range_all + s_index];
+                        }
+                    }
+                    if (distance_sum <= config.kappa)
+                    {
+                        patch_count[index]++;
+                        // Patch(y, x) += Patch(y + s_dy, x + s_dx);
+                        for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
+                        {
+                            for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
+                            {
+                                const auto p_index
+                                    = (p_dy + config.patch_size) * patch_range_all + (p_dx + config.patch_size);
+
+                                const auto dst_index = (y + s_dy + p_dy) * config.width + (x + s_dx + p_dx);
+
+                                auto& dst = sub_buffer[dst_index * (patch_range_all * patch_range_all) + p_index];
+                                auto& src = input.pixel(y + s_dy + p_dy, x + s_dx + p_dx);
+                                dst.r += src.r;
+                                dst.g += src.g;
+                                dst.b += src.b;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
+    // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
+    for (index_t y = 0; y < config.height; y++)
+    {
+        for (index_t x = 0; x < config.width; x++)
+        {
+            for (index_t p_dy = -config.patch_size; p_dy <= config.patch_size; p_dy++)
+            {
+                for (index_t p_dx = -config.patch_size; p_dx <= config.patch_size; p_dx++)
+                {
+                    // output(y, x) += sub_buffer(y, x, p_dy, p_dx);
+                    // count(y, x) += patch_count(y, x, p_dy, p_dx);
+                }
+            }
+            // output(y, x) /= count(y, x)
         }
     }
 }
