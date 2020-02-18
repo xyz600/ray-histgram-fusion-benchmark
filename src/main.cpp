@@ -40,7 +40,7 @@ struct Config
         std::cin >> height >> width >> number_of_sample;
         patch_size = 1;
         search_range = 5;
-        kappa = 3.5;
+        kappa = 1000;
         m = 7.5;
         s = 2;
     }
@@ -339,16 +339,15 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
                     if (distance < config.kappa)
                     {
                         patch_count[index]++;
-                        // add_patch(sub_buffer.get(), y, x, s_y, s_x, input, config.patch_size);
-                        pixel += input.pixel(s_y, s_x);
+                        // pixel += input.pixel(s_y, s_x);
+                        add_patch(sub_buffer.get(), y, x, s_y, s_x, input, config.patch_size);
                     }
                 }
             }
-
-            if (patch_count[index] > 0)
-            {
-                pixel /= patch_count[index];
-            }
+            // if (patch_count[index] > 0)
+            // {
+            //     pixel /= patch_count[index];
+            // }
         }
     }
 
@@ -356,12 +355,12 @@ void ray_histgram_fusion(Image<Color<value_t>>& input, Image<Histgram<value_t>>&
     std::cerr << "elapsed time of patch distance: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(end2 - end1).count() << "[ms]" << std::endl;
 
-    {
-        const std::string output_path("output_path.ppm");
-        print_ppm(output, config.height, config.width, config.patch_size, output_path);
-    }
+    // {
+    //     const std::string output_path("output_path.ppm");
+    //     print_ppm(output, config.height, config.width, config.patch_size, output_path);
+    // }
 
-    return;
+    // return;
 
 // sub_buffer, patch_count から、最終的なバッファに足しこんでいく
 // patch 間距離を計算して、一定値以下なら output_buffer に足し込む
